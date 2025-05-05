@@ -14,6 +14,8 @@ import {MODULE_TYPE_VALIDATOR, MODULE_TYPE_EXECUTOR} from "nexus-1.2/types/Const
 import "nexus-1.2/lib/ModeLib.sol";
 import "nexus-1.2/base/ExecutionHelper.sol";
 import "nexus-1.2/interfaces/base/IModuleManager.sol";
+import "nexus-1.2/interfaces/modules/IValidator.sol";
+import "nexus-1.2/interfaces/modules/IExecutor.sol";
 
 interface ISimpleModular7702Account {
     struct MainStorage {
@@ -129,11 +131,23 @@ contract SimpleModular7702Account is
         override
         onlyEntryPointOrSelf
     {
-        // TODO: implement module install
+        if (module == address(0)) revert ModuleAddressCanNotBeZero();
+
+        if (moduleTypeId == MODULE_TYPE_VALIDATOR) {
+            require(_getMainStorage().validators[module], ModuleAlreadyInstalled(moduleTypeId, module));
+            require(IValidator(module).isModuleType(MODULE_TYPE_VALIDATOR), MismatchModuleTypeId());
+            _getMainStorage().validators[module] = true;
+            IValidator(module).onInstall(initData);
+        } else if (moduleTypeId == MODULE_TYPE_EXECUTOR) {
+            require(_getMainStorage().executors[module], ModuleAlreadyInstalled(moduleTypeId, module));
+            require(IExecutor(module).isModuleType(MODULE_TYPE_EXECUTOR), MismatchModuleTypeId());
+            _getMainStorage().executors[module] = true;
+            IExecutor(module).onInstall(initData);
+        }
         emit ModuleInstalled(moduleTypeId, module);
     }
 
-    function uninstallModule(uint256 moduleTypeId, address module, bytes calldata deInitData)
+    function uninstallModule(uint256 moduleTypeId, address module, bytes calldata)
         external
         payable
         onlyEntryPointOrSelf
@@ -141,9 +155,11 @@ contract SimpleModular7702Account is
         require(_isModuleInstalled(moduleTypeId, module), ModuleNotInstalled(moduleTypeId, module));
 
         if (moduleTypeId == MODULE_TYPE_VALIDATOR) {
-            // TODO: implement validator uninstall
+            require(_getMainStorage().validators[module], ModuleNotInstalled(moduleTypeId, module));
+            _getMainStorage().validators[module] = false;
         } else if (moduleTypeId == MODULE_TYPE_EXECUTOR) {
-            // TODO: implement executor uninstall
+            require(_getMainStorage().executors[module], ModuleNotInstalled(moduleTypeId, module));
+            _getMainStorage().executors[module] = false;
         }
         emit ModuleUninstalled(moduleTypeId, module);
     }
@@ -161,10 +177,6 @@ contract SimpleModular7702Account is
         return _isModuleInstalled(moduleTypeId, module);
     }
 
-    /**
-     * Make this account callable through ERC-4337 EntryPoint.
-     * The UserOperation should be signed by this account's private key.
-     */
     function _validateSignature(PackedUserOperation calldata userOp, bytes32 userOpHash)
         internal
         virtual
