@@ -1,3 +1,2 @@
 aa-0.8=lib/account-abstraction/contracts
 oz-5.1=lib/openzeppelin-contracts/contracts
-nexus-1.2=lib/nexus/contracts

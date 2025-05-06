@@ -7,45 +7,31 @@ import "oz-5.1/token/ERC1155/utils/ERC1155Holder.sol";
 import "oz-5.1/token/ERC721/utils/ERC721Holder.sol";
 import "oz-5.1/utils/cryptography/ECDSA.sol";
 import {SIG_VALIDATION_SUCCESS, SIG_VALIDATION_FAILED} from "aa-0.8/core/Helpers.sol";
-import "aa-0.8/core/BaseAccount.sol";
 import "aa-0.8/interfaces/IEntryPoint.sol";
-import "nexus-1.2/interfaces/IERC7579Account.sol";
-import {MODULE_TYPE_VALIDATOR, MODULE_TYPE_EXECUTOR} from "nexus-1.2/types/Constants.sol";
-import "nexus-1.2/lib/ModeLib.sol";
-import "nexus-1.2/base/ExecutionHelper.sol";
-import "nexus-1.2/interfaces/base/IModuleManager.sol";
-import "nexus-1.2/interfaces/modules/IValidator.sol";
-import "nexus-1.2/interfaces/modules/IExecutor.sol";
+import {IValidator, IExecutor, MODULE_TYPE_VALIDATOR, MODULE_TYPE_EXECUTOR} from "./interfaces/IERC7579Module.sol";
+import "./BaseAccount.sol";
+import "./lib/ModeLib.sol";
+import "./lib/ExecLib.sol";
 
-interface ISimpleModular7702Account {
+contract SimpleModular7702Account is BaseAccount, IERC165, IERC1271, ERC1155Holder, ERC721Holder {
+    using ModeLib for ExecutionMode;
+    using ExecLib for bytes;
+
+    error InvalidModule(address module);
+    error ModuleAddressCanNotBeZero();
+    error ModuleAlreadyInstalled(uint256 moduleTypeId, address module);
+    error MismatchModuleTypeId();
+    error ModuleNotInstalled(uint256 moduleTypeId, address module);
+
+    // ================================================ Storage ================================================
+
+    /// @dev cast index-erc7201 ethaccount.SimpleModular7702Account.0.0.1
+    bytes32 private constant MAIN_STORAGE_SLOT = 0x2518c257f63affc9ee9dcce928ffdd39a87f98d73db3e9927c2e403aea47f400;
+
     struct MainStorage {
         mapping(address => bool) validators;
         mapping(address => bool) executors;
     }
-
-    error NotFromEntryPoint();
-    error NotFromEntryPointOrSelf();
-}
-
-/**
- * Modified from eth-infinitism v0.8 Simple7702Account.sol
- * A minimal account to be used with EIP-7702, ERC-4337, and ERC-7579
- */
-contract SimpleModular7702Account is
-    BaseAccount,
-    IERC165,
-    IERC1271,
-    ERC1155Holder,
-    ERC721Holder,
-    ISimpleModular7702Account,
-    IERC7579Account,
-    ExecutionHelper,
-    IModuleManager
-{
-    using ModeLib for ExecutionMode;
-
-    /// @dev cast index-erc7201 ethaccount.SimpleModular7702Account.0.0.1
-    bytes32 private constant MAIN_STORAGE_SLOT = 0x2518c257f63affc9ee9dcce928ffdd39a87f98d73db3e9927c2e403aea47f400;
 
     function _getMainStorage() private pure returns (MainStorage storage $) {
         assembly {
@@ -53,80 +39,40 @@ contract SimpleModular7702Account is
         }
     }
 
-    modifier onlyEntryPoint() {
-        require(msg.sender == address(entryPoint()), NotFromEntryPoint());
-        _;
-    }
+    // ================================================ Validation ================================================
 
-    modifier onlyEntryPointOrSelf() {
-        require(msg.sender == address(entryPoint()) || msg.sender == address(this), NotFromEntryPointOrSelf());
-        _;
-    }
-
-    modifier onlyExecutorModule() virtual {
-        require(_getMainStorage().executors[msg.sender], InvalidModule(msg.sender));
-        _;
-    }
-
-    // address of entryPoint v0.8
-    function entryPoint() public pure override returns (IEntryPoint) {
-        return IEntryPoint(0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108);
-    }
-
-    function accountId() external pure virtual returns (string memory) {
-        return "ethaccount.SimpleModular7702Account.0.0.1";
-    }
-
-    function supportsModule(uint256 moduleTypeId) external view virtual returns (bool) {
-        if (moduleTypeId == MODULE_TYPE_VALIDATOR || moduleTypeId == MODULE_TYPE_EXECUTOR) {
-            return true;
-        }
-        return false;
-    }
-
-    function supportsExecutionMode(ExecutionMode mode) external view virtual returns (bool isSupported) {
-        (CallType callType, ExecType execType) = mode.decodeBasic();
-
-        // Return true if both the call type and execution type are supported.
-        return (callType == CALLTYPE_SINGLE || callType == CALLTYPE_BATCH || callType == CALLTYPE_DELEGATECALL)
-            && (execType == EXECTYPE_DEFAULT || execType == EXECTYPE_TRY);
-    }
-
-    function execute(ExecutionMode mode, bytes calldata executionCalldata) external payable onlyEntryPoint {
-        (CallType callType, ExecType execType) = mode.decodeBasic();
-        if (callType == CALLTYPE_SINGLE) {
-            _handleSingleExecution(executionCalldata, execType);
-        } else if (callType == CALLTYPE_BATCH) {
-            _handleBatchExecution(executionCalldata, execType);
-        } else if (callType == CALLTYPE_DELEGATECALL) {
-            _handleDelegateCallExecution(executionCalldata, execType);
-        } else {
-            revert UnsupportedCallType(callType);
-        }
-    }
-
-    function executeFromExecutor(ExecutionMode mode, bytes calldata executionCalldata)
-        external
-        payable
-        onlyExecutorModule
-        returns (bytes[] memory returnData)
+    function _validateUserOp(PackedUserOperation calldata userOp, bytes32 userOpHash)
+        internal
+        virtual
+        override
+        returns (uint256 validationData)
     {
-        (CallType callType, ExecType execType) = mode.decodeBasic();
-        // check if calltype is batch or single or delegate call
-        if (callType == CALLTYPE_SINGLE) {
-            returnData = _handleSingleExecutionAndReturnData(executionCalldata, execType);
-        } else if (callType == CALLTYPE_BATCH) {
-            returnData = _handleBatchExecutionAndReturnData(executionCalldata, execType);
-        } else if (callType == CALLTYPE_DELEGATECALL) {
-            returnData = _handleDelegateCallExecutionAndReturnData(executionCalldata, execType);
-        } else {
-            revert UnsupportedCallType(callType);
-        }
+        return _validateSignature(userOpHash, userOp.signature) ? SIG_VALIDATION_SUCCESS : SIG_VALIDATION_FAILED;
     }
+
+    function isValidSignature(bytes32 hash, bytes memory signature)
+        public
+        view
+        override(IERC1271, IERC7579Account)
+        returns (bytes4 magicValue)
+    {
+        return _validateSignature(hash, signature) ? this.isValidSignature.selector : bytes4(0xffffffff);
+    }
+
+    function _validateSignature(bytes32 hash, bytes memory signature) internal view returns (bool) {
+        return ECDSA.recover(hash, signature) == address(this);
+    }
+
+    // ================================================ Execution ================================================
+
+    function _requireExecutorModule() public view override {
+        require(_getMainStorage().executors[msg.sender], InvalidModule(msg.sender));
+    }
+
+    // ================================================ Module Management ================================================
 
     function installModule(uint256 moduleTypeId, address module, bytes calldata initData)
         external
-        payable
         virtual
         override
         onlyEntryPointOrSelf
@@ -147,11 +93,7 @@ contract SimpleModular7702Account is
         emit ModuleInstalled(moduleTypeId, module);
     }
 
-    function uninstallModule(uint256 moduleTypeId, address module, bytes calldata)
-        external
-        payable
-        onlyEntryPointOrSelf
-    {
+    function uninstallModule(uint256 moduleTypeId, address module, bytes calldata) external onlyEntryPointOrSelf {
         require(_isModuleInstalled(moduleTypeId, module), ModuleNotInstalled(moduleTypeId, module));
 
         if (moduleTypeId == MODULE_TYPE_VALIDATOR) {
@@ -177,30 +119,26 @@ contract SimpleModular7702Account is
         return _isModuleInstalled(moduleTypeId, module);
     }
 
-    function _validateSignature(PackedUserOperation calldata userOp, bytes32 userOpHash)
-        internal
-        virtual
-        override
-        returns (uint256 validationData)
-    {
-        return _checkSignature(userOpHash, userOp.signature) ? SIG_VALIDATION_SUCCESS : SIG_VALIDATION_FAILED;
+    // ================================================ View Functions ================================================
+
+    function entryPoint() public pure override returns (IEntryPoint) {
+        return IEntryPoint(0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108); // v0.8
     }
 
-    function isValidSignature(bytes32 hash, bytes memory signature)
-        public
-        view
-        override(IERC1271, IERC7579Account)
-        returns (bytes4 magicValue)
-    {
-        return _checkSignature(hash, signature) ? this.isValidSignature.selector : bytes4(0xffffffff);
+    function accountId() external pure virtual returns (string memory) {
+        return "ethaccount.SimpleModular7702Account.0.0.1";
     }
 
-    function _checkSignature(bytes32 hash, bytes memory signature) internal view returns (bool) {
-        return ECDSA.recover(hash, signature) == address(this);
+    function supportsModule(uint256 moduleTypeId) external view virtual returns (bool) {
+        if (moduleTypeId == MODULE_TYPE_VALIDATOR || moduleTypeId == MODULE_TYPE_EXECUTOR) {
+            return true;
+        }
+        return false;
     }
 
-    function _requireForExecute() internal view virtual override {
-        require(msg.sender == address(this) || msg.sender == address(entryPoint()), "not from self or EntryPoint");
+    function supportsExecutionMode(ExecutionMode mode) external view virtual returns (bool isSupported) {
+        (CallType callType, ExecType execType) = mode.decodeBasic();
+        return (callType == CALLTYPE_SINGLE || callType == CALLTYPE_BATCH) && (execType == EXECTYPE_DEFAULT);
     }
 
     function supportsInterface(bytes4 id) public pure override(ERC1155Holder, IERC165) returns (bool) {
