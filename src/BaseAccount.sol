@@ -5,18 +5,16 @@ pragma solidity ^0.8.28;
 /* solhint-disable no-empty-blocks */
 /* solhint-disable no-inline-assembly */
 
-import "aa-0.8/interfaces/IAccount.sol";
-import "aa-0.8/interfaces/IEntryPoint.sol";
-import "aa-0.8/utils/Exec.sol";
-import "aa-0.8/core/UserOperationLib.sol";
-import "./interfaces/IERC7579Account.sol";
-import "./lib/ModeLib.sol";
-import "./lib/ExecLib.sol";
+import {IAccount} from "aa-0.8/interfaces/IAccount.sol";
+import {IEntryPoint} from "aa-0.8/interfaces/IEntryPoint.sol";
+import {PackedUserOperation} from "aa-0.8/interfaces/PackedUserOperation.sol";
+import {UserOperationLib} from "aa-0.8/core/UserOperationLib.sol";
+import {IERC7579Execution} from "oz-5.3/interfaces/draft-IERC7579.sol";
+import {ERC7579Utils, Mode, CallType, ExecType} from "oz-5.3/account/utils/draft-ERC7579Utils.sol";
 
-abstract contract BaseAccount is IAccount, IERC7579Account {
+abstract contract BaseAccount is IAccount, IERC7579Execution {
     using UserOperationLib for PackedUserOperation;
-    using ModeLib for ExecutionMode;
-    using ExecLib for bytes;
+    using ERC7579Utils for *;
 
     error ExecuteError(uint256 index, bytes error);
     error NotFromEntryPoint();
@@ -86,67 +84,34 @@ abstract contract BaseAccount is IAccount, IERC7579Account {
 
     // ================================================ Execution ================================================
 
-    function execute(ExecutionMode mode, bytes calldata executionCalldata) external payable onlyEntryPoint {
-        (CallType callType, ExecType execType) = mode.decodeBasic();
-        if (callType == CALLTYPE_SINGLE && execType == EXECTYPE_DEFAULT) {
-            (address target, uint256 value, bytes calldata callData) = executionCalldata.decodeSingle();
-            _execute(target, value, callData);
-        } else if (callType == CALLTYPE_BATCH && execType == EXECTYPE_DEFAULT) {
-            Execution[] calldata executions = executionCalldata.decodeBatch();
-            _executeBatch(executions);
-        } else {
-            revert UnsupportedCallType(callType);
-        }
-    }
-
     function _requireExecutorModule() public view virtual;
 
-    function executeFromExecutor(ExecutionMode mode, bytes calldata executionCalldata)
+    function execute(bytes32 mode, bytes calldata executionCalldata) external payable onlyEntryPoint {
+        _handleExecute(mode, executionCalldata);
+    }
+
+    function executeFromExecutor(bytes32 mode, bytes calldata executionCalldata)
         external
         payable
         returns (bytes[] memory returnData)
     {
         _requireExecutorModule();
-        (CallType callType, ExecType execType) = mode.decodeBasic();
-        if (callType == CALLTYPE_SINGLE && execType == EXECTYPE_DEFAULT) {
-            (address target, uint256 value, bytes calldata callData) = executionCalldata.decodeSingle();
-            _execute(target, value, callData);
-        } else if (callType == CALLTYPE_BATCH && execType == EXECTYPE_DEFAULT) {
-            Execution[] calldata executions = executionCalldata.decodeBatch();
-            _executeBatch(executions);
+        return _handleExecute(mode, executionCalldata);
+    }
+
+    function _handleExecute(bytes32 mode, bytes calldata executionCalldata)
+        internal
+        returns (bytes[] memory returnData)
+    {
+        (CallType callType, ExecType execType,,) = Mode.wrap(mode).decodeMode();
+        require(execType == ERC7579Utils.EXECTYPE_DEFAULT, ERC7579Utils.ERC7579UnsupportedExecType(execType));
+
+        if (callType == ERC7579Utils.CALLTYPE_SINGLE && execType == ERC7579Utils.EXECTYPE_DEFAULT) {
+            returnData = ERC7579Utils.execSingle(executionCalldata, ERC7579Utils.EXECTYPE_DEFAULT);
+        } else if (callType == ERC7579Utils.CALLTYPE_BATCH && execType == ERC7579Utils.EXECTYPE_DEFAULT) {
+            returnData = ERC7579Utils.execBatch(executionCalldata, ERC7579Utils.EXECTYPE_DEFAULT);
         } else {
-            revert UnsupportedCallType(callType);
-        }
-    }
-
-    /**
-     * execute a single call from the account.
-     */
-    function _execute(address target, uint256 value, bytes calldata data) internal {
-        bool ok = Exec.call(target, value, data, gasleft());
-        if (!ok) {
-            Exec.revertWithReturnData();
-        }
-    }
-
-    /**
-     * execute a batch of calls.
-     * revert on the first call that fails.
-     * If the batch reverts, and it contains more than a single call, then wrap the revert with ExecuteError,
-     *  to mark the failing call index.
-     */
-    function _executeBatch(Execution[] calldata calls) internal {
-        uint256 callsLength = calls.length;
-        for (uint256 i = 0; i < callsLength; i++) {
-            Execution calldata call = calls[i];
-            bool ok = Exec.call(call.target, call.value, call.callData, gasleft());
-            if (!ok) {
-                if (callsLength == 1) {
-                    Exec.revertWithReturnData();
-                } else {
-                    revert ExecuteError(i, Exec.getReturnData(0));
-                }
-            }
+            revert ERC7579Utils.ERC7579UnsupportedCallType(callType);
         }
     }
 }

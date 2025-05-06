@@ -1,21 +1,38 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import "oz-5.1/utils/introspection/IERC165.sol";
-import "oz-5.1/interfaces/IERC1271.sol";
-import "oz-5.1/token/ERC1155/utils/ERC1155Holder.sol";
-import "oz-5.1/token/ERC721/utils/ERC721Holder.sol";
-import "oz-5.1/utils/cryptography/ECDSA.sol";
+import {PackedUserOperation} from "aa-0.8/interfaces/PackedUserOperation.sol";
 import {SIG_VALIDATION_SUCCESS, SIG_VALIDATION_FAILED} from "aa-0.8/core/Helpers.sol";
-import "aa-0.8/interfaces/IEntryPoint.sol";
-import {IValidator, IExecutor, MODULE_TYPE_VALIDATOR, MODULE_TYPE_EXECUTOR} from "./interfaces/IERC7579Module.sol";
-import "./BaseAccount.sol";
-import "./lib/ModeLib.sol";
-import "./lib/ExecLib.sol";
+import {IEntryPoint} from "aa-0.8/interfaces/IEntryPoint.sol";
+import {IAccount} from "aa-0.8/interfaces/IAccount.sol";
+import "oz-5.3/utils/introspection/IERC165.sol";
+import "oz-5.3/interfaces/IERC1271.sol";
+import "oz-5.3/token/ERC1155/utils/ERC1155Holder.sol";
+import "oz-5.3/token/ERC721/utils/ERC721Holder.sol";
+import "oz-5.3/utils/cryptography/ECDSA.sol";
+import {ERC7579Utils, Mode, CallType, ExecType} from "oz-5.3/account/utils/draft-ERC7579Utils.sol";
+import {
+    MODULE_TYPE_VALIDATOR,
+    MODULE_TYPE_EXECUTOR,
+    IERC7579ModuleConfig,
+    IERC7579AccountConfig,
+    IERC7579Execution,
+    IERC7579Module
+} from "oz-5.3/interfaces/draft-IERC7579.sol";
 
-contract SimpleModular7702Account is BaseAccount, IERC165, IERC1271, ERC1155Holder, ERC721Holder {
-    using ModeLib for ExecutionMode;
-    using ExecLib for bytes;
+import {BaseAccount} from "./BaseAccount.sol";
+import {IERC7579Validator} from "./interfaces/IERC7579Validator.sol";
+
+contract SimpleModular7702Account is
+    BaseAccount,
+    IERC7579ModuleConfig,
+    IERC7579AccountConfig,
+    IERC165,
+    IERC1271,
+    ERC1155Holder,
+    ERC721Holder
+{
+    using ERC7579Utils for *;
 
     error InvalidModule(address module);
     error ModuleAddressCanNotBeZero();
@@ -43,7 +60,6 @@ contract SimpleModular7702Account is BaseAccount, IERC165, IERC1271, ERC1155Hold
 
     function _validateUserOp(PackedUserOperation calldata userOp, bytes32 userOpHash)
         internal
-        virtual
         override
         returns (uint256 validationData)
     {
@@ -63,14 +79,15 @@ contract SimpleModular7702Account is BaseAccount, IERC165, IERC1271, ERC1155Hold
                 _isModuleInstalled(MODULE_TYPE_VALIDATOR, validator),
                 ModuleNotInstalled(MODULE_TYPE_VALIDATOR, validator)
             );
-            validationData = IValidator(validator).validateUserOp(userOp, userOpHash);
+
+            validationData = IERC7579Validator(validator).validateUserOp(userOp, userOpHash);
         }
     }
 
     function isValidSignature(bytes32 hash, bytes calldata signature)
         public
         view
-        override(IERC1271, IERC7579Account)
+        override
         returns (bytes4 magicValue)
     {
         address validator = address(bytes20(signature[0:20]));
@@ -79,8 +96,9 @@ contract SimpleModular7702Account is BaseAccount, IERC165, IERC1271, ERC1155Hold
         if (validator == address(0)) {
             return _validateSignature(hash, actualSignature) ? this.isValidSignature.selector : bytes4(0xffffffff);
         } else {
-            try IValidator(validator).isValidSignatureWithSender(msg.sender, hash, actualSignature) returns (bytes4 res)
-            {
+            try IERC7579Validator(validator).isValidSignatureWithSender(msg.sender, hash, actualSignature) returns (
+                bytes4 res
+            ) {
                 return res;
             } catch {
                 return bytes4(0xffffffff);
@@ -102,7 +120,6 @@ contract SimpleModular7702Account is BaseAccount, IERC165, IERC1271, ERC1155Hold
 
     function installModule(uint256 moduleTypeId, address module, bytes calldata initData)
         external
-        virtual
         override
         onlyEntryPointOrSelf
     {
@@ -110,14 +127,14 @@ contract SimpleModular7702Account is BaseAccount, IERC165, IERC1271, ERC1155Hold
 
         if (moduleTypeId == MODULE_TYPE_VALIDATOR) {
             require(_getMainStorage().validators[module], ModuleAlreadyInstalled(moduleTypeId, module));
-            require(IValidator(module).isModuleType(MODULE_TYPE_VALIDATOR), MismatchModuleTypeId());
+            require(IERC7579Module(module).isModuleType(MODULE_TYPE_VALIDATOR), MismatchModuleTypeId());
             _getMainStorage().validators[module] = true;
-            IValidator(module).onInstall(initData);
+            IERC7579Module(module).onInstall(initData);
         } else if (moduleTypeId == MODULE_TYPE_EXECUTOR) {
             require(_getMainStorage().executors[module], ModuleAlreadyInstalled(moduleTypeId, module));
-            require(IExecutor(module).isModuleType(MODULE_TYPE_EXECUTOR), MismatchModuleTypeId());
+            require(IERC7579Module(module).isModuleType(MODULE_TYPE_EXECUTOR), MismatchModuleTypeId());
             _getMainStorage().executors[module] = true;
-            IExecutor(module).onInstall(initData);
+            IERC7579Module(module).onInstall(initData);
         }
         emit ModuleInstalled(moduleTypeId, module);
     }
@@ -154,25 +171,28 @@ contract SimpleModular7702Account is BaseAccount, IERC165, IERC1271, ERC1155Hold
         return IEntryPoint(0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108); // v0.8
     }
 
-    function accountId() external pure virtual returns (string memory) {
+    function accountId() external pure returns (string memory) {
         return "ethaccount.SimpleModular7702Account.0.0.1";
     }
 
-    function supportsModule(uint256 moduleTypeId) external view virtual returns (bool) {
+    function supportsModule(uint256 moduleTypeId) external pure returns (bool) {
         if (moduleTypeId == MODULE_TYPE_VALIDATOR || moduleTypeId == MODULE_TYPE_EXECUTOR) {
             return true;
         }
         return false;
     }
 
-    function supportsExecutionMode(ExecutionMode mode) external view virtual returns (bool isSupported) {
-        (CallType callType, ExecType execType) = mode.decodeBasic();
-        return (callType == CALLTYPE_SINGLE || callType == CALLTYPE_BATCH) && (execType == EXECTYPE_DEFAULT);
+    function supportsExecutionMode(bytes32 mode) external pure returns (bool isSupported) {
+        (CallType callType, ExecType execType,,) = Mode.wrap(mode).decodeMode();
+        return (callType == ERC7579Utils.CALLTYPE_SINGLE || callType == ERC7579Utils.CALLTYPE_BATCH)
+            && (execType == ERC7579Utils.EXECTYPE_DEFAULT);
     }
 
     function supportsInterface(bytes4 id) public pure override(ERC1155Holder, IERC165) returns (bool) {
         return id == type(IERC165).interfaceId || id == type(IAccount).interfaceId || id == type(IERC1271).interfaceId
-            || id == type(IERC1155Receiver).interfaceId || id == type(IERC721Receiver).interfaceId;
+            || id == type(IERC1155Receiver).interfaceId || id == type(IERC721Receiver).interfaceId
+            || id == type(IERC7579AccountConfig).interfaceId || id == type(IERC7579ModuleConfig).interfaceId
+            || id == type(IERC7579Execution).interfaceId;
     }
 
     // accept incoming calls (with or without value), to mimic an EOA.
