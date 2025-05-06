@@ -47,16 +47,45 @@ contract SimpleModular7702Account is BaseAccount, IERC165, IERC1271, ERC1155Hold
         override
         returns (uint256 validationData)
     {
-        return _validateSignature(userOpHash, userOp.signature) ? SIG_VALIDATION_SUCCESS : SIG_VALIDATION_FAILED;
+        uint256 nonce = userOp.nonce;
+        address validator;
+
+        // userOp.nonce = 20 bytes validator address | 4 bytes empty | 8 bytes nonce
+        assembly {
+            validator := shr(96, nonce)
+        }
+
+        if (validator == address(0)) {
+            validationData =
+                _validateSignature(userOpHash, userOp.signature) ? SIG_VALIDATION_SUCCESS : SIG_VALIDATION_FAILED;
+        } else {
+            require(
+                _isModuleInstalled(MODULE_TYPE_VALIDATOR, validator),
+                ModuleNotInstalled(MODULE_TYPE_VALIDATOR, validator)
+            );
+            validationData = IValidator(validator).validateUserOp(userOp, userOpHash);
+        }
     }
 
-    function isValidSignature(bytes32 hash, bytes memory signature)
+    function isValidSignature(bytes32 hash, bytes calldata signature)
         public
         view
         override(IERC1271, IERC7579Account)
         returns (bytes4 magicValue)
     {
-        return _validateSignature(hash, signature) ? this.isValidSignature.selector : bytes4(0xffffffff);
+        address validator = address(bytes20(signature[0:20]));
+        bytes memory actualSignature = signature[20:];
+
+        if (validator == address(0)) {
+            return _validateSignature(hash, actualSignature) ? this.isValidSignature.selector : bytes4(0xffffffff);
+        } else {
+            try IValidator(validator).isValidSignatureWithSender(msg.sender, hash, actualSignature) returns (bytes4 res)
+            {
+                return res;
+            } catch {
+                return bytes4(0xffffffff);
+            }
+        }
     }
 
     function _validateSignature(bytes32 hash, bytes memory signature) internal view returns (bool) {
