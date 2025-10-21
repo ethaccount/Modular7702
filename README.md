@@ -1,6 +1,6 @@
 # Modular7702
 
-Using OpenZeppelin, create a contract account that complies with ERC-4337 and ERC-7579 and is compatible with 7702.
+A modular contract account designed for delegation by EOAs and compatible with EntryPoint v0.8.
 
 ## Foundry
 
