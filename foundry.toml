@@ -5,8 +5,12 @@ libs = ["lib", "dependencies"]
 
 [dependencies]
 forge-std = "1.11.0"
-"oz-5.3" = { version = "5.3", git = "https://github.com/OpenZeppelin/openzeppelin-contracts", tag = "v5.3.0" }
 "oz-5.4" = { version = "5.4", git = "https://github.com/OpenZeppelin/openzeppelin-contracts", tag = "v5.4.0" }
 aa = { version = "0.8", git = "https://github.com/eth-infinitism/account-abstraction.git", tag = "v0.8.0" }
+
+
+[lint]
+exclude_lints = ["unsafe-typecast"]
+
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
